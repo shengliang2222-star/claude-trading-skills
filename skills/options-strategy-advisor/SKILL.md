@@ -133,6 +133,49 @@ Contracts: 10
 IV: 25% (or use HV if not provided)
 ```
 
+### Step 1b: Cross-Validate Spot Price with WebSearch
+
+**Objective:** Catch stale FMP quotes by comparing against a live Google snapshot before pricing options. FMP free-tier quotes can lag 10–15 minutes; an outdated spot makes every downstream Greek and P/L number wrong.
+
+**Procedure:**
+
+1. After FMP returns a spot price + timestamp (`api_value`, `api_ts`), run a `WebSearch` query:
+   - Query: `<TICKER> stock price`
+   - Read the top result's snippet text.
+2. Extract `google_value` (USD price) and `google_ts` (if the snippet contains an "as of HH:MM ..." marker) using the parsers in `scripts/lib/cross_validate.py`:
+   ```python
+   from lib.cross_validate import (
+       cross_validate_spot,
+       parse_price_from_snippet,
+       parse_timestamp_from_snippet,
+   )
+
+   google_value = parse_price_from_snippet(snippet, ticker)
+   google_ts = parse_timestamp_from_snippet(snippet)
+
+   result = cross_validate_spot(
+       ticker=ticker,
+       metric="price",
+       api_value=fmp_price,
+       api_ts=fmp_timestamp,
+       google_value=google_value,
+       google_ts=google_ts,
+   )
+   ```
+3. Use `result["value"]` as the spot price for Black-Scholes. Record `result["source"]` and `result["conflict"]` for the final report.
+
+**Decision rules (already encoded in `cross_validate_spot`):**
+
+| Situation | Outcome | `source` |
+|---|---|---|
+| FMP and Google snapshots within 5 min | Keep FMP | `fmp_with_websearch_check` |
+| Google >5 min newer, |diff| ≤ 1% | Swap to Google silently | `websearch` |
+| Google >5 min newer, |diff| > 1% | Swap to Google, **emit warning** in report | `websearch` (conflict=True) |
+| Google snippet has no timestamp | Discard Google, keep FMP | `fmp` (sanity-check skipped) |
+| FMP unavailable | Use Google if it has a timestamp | `websearch` |
+
+**Output expectation:** Add a `Data Source` line to the report header (see Step 9 template) and surface conflicts prominently — a >1% spot disagreement usually means FMP cache is stale enough to affect strike-distance and IV scaling.
+
 ### Step 2: Calculate Historical Volatility (if IV not provided)
 
 **Objective:** Estimate volatility from historical price movements.
@@ -673,6 +716,8 @@ Straddle/Strangle:
 **Strategy:** [Strategy Type]
 **Expiration:** [Date] ([DTE] days)
 **Contracts:** [Number]
+**Spot Price:** $[VALUE] (source: `[fmp | fmp_with_websearch_check | websearch]`, as of [ISO_TS])
+**Spot Conflict:** [omit if no conflict; otherwise: ⚠️ FMP $X.XX vs Google $Y.YY (Z.ZZ% diff) — using Google]
 
 ---
 

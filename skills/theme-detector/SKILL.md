@@ -149,6 +149,51 @@ ls -lt reports/theme_detector_*.json | head -1
 cat reports/theme_detector_YYYY-MM-DD_HHMMSS.json
 ```
 
+### Step 3b: Cross-Validate Representative Stock Prices with WebSearch
+
+**Objective:** The FINVIZ/FMP data used by the scorer can lag the live tape by 5–15 minutes. Before surfacing representative stocks in the final report, cross-validate each top-theme's headline tickers against a Google snapshot so the report doesn't quote stale prices when the market has moved meaningfully.
+
+**Procedure:**
+
+1. From the JSON output, take the **top 3 representative stocks** for each of the top 5 themes (≤ 15 tickers total — keeps WebSearch volume bounded).
+2. For each ticker, run `WebSearch <TICKER> stock price` and read the top snippet.
+3. Cross-validate using `scripts/lib/cross_validate.py`:
+   ```python
+   from lib.cross_validate import (
+       cross_validate_spot,
+       parse_price_from_snippet,
+       parse_timestamp_from_snippet,
+   )
+
+   for stock in theme["representative_stocks"][:3]:
+       google_value = parse_price_from_snippet(snippet, stock["ticker"])
+       google_ts = parse_timestamp_from_snippet(snippet)
+       result = cross_validate_spot(
+           ticker=stock["ticker"],
+           metric="price",
+           api_value=stock["price"],
+           api_ts=stock.get("last_updated"),
+           google_value=google_value,
+           google_ts=google_ts,
+       )
+       stock["price"] = result["value"]
+       stock["data_source"] = result["source"]
+       if result["conflict"]:
+           stock["price_conflict_note"] = result["note"]
+   ```
+4. In the final report, surface a `data_source` tag next to each representative stock's price and a `⚠️ Spot Conflict` row for any ticker where `result["conflict"]` is True.
+
+**Decision rules (encoded in `cross_validate_spot`):**
+
+| Situation | Outcome | `source` |
+|---|---|---|
+| FINVIZ/FMP and Google snapshots within 5 min | Keep FINVIZ/FMP value | `fmp_with_websearch_check` |
+| Google >5 min newer, |diff| ≤ 1% | Swap to Google silently | `websearch` |
+| Google >5 min newer, |diff| > 1% | Swap to Google + flag conflict | `websearch` (conflict=True) |
+| Google snippet missing parseable timestamp | Keep API value | `fmp` (sanity-check skipped) |
+
+**Scope note:** Only spot prices are cross-validated. Lifecycle, breadth, and uptrend-ratio inputs are EOD-based and don't benefit from this check.
+
 ### Step 4: Perform Narrative Confirmation via WebSearch
 
 For the top 5 themes (by Theme Heat score), execute WebSearch queries to confirm narrative strength:
