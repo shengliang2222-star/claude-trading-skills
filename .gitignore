@@ -20,6 +20,9 @@ env/
 .vscode/
 .envrc
 .mcp.json
+# Per-checkout Claude Code symlinks/settings into the repo's skills/agents/commands.
+# These are local IDE wiring, not a contract for cloners.
+.claude/
 
 # Logs & temp
 logs/
